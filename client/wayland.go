@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -32,6 +33,9 @@ const waylandWlDisplayErrorEvent uint16 = 0
 const waylandFormatXrgb8888 uint32 = 1
 const waylandHeaderSize uint32 = 8
 const colorChannels uint32 = 4
+const waylandWlSeatGetKeyboardOpcode = 1
+const waylandWlKeyboardKeyEventOpcode = 3
+const waylandWlKeyboardModifiersOpcode = 4
 
 type StateEnum int
 
@@ -57,6 +61,8 @@ type State struct {
 	shmPoolSize  uint32 // how many bytes total
 	shmFd        int    // file descriptor of a shared memory resource
 	shmPoolData  *[]byte
+	wlSeat       uint32
+	wlKeyboard   uint32
 	stateState   StateEnum
 }
 
@@ -80,7 +86,6 @@ func DisplayConnect() (int, error) {
 		fmt.Println("Connection error: ", err.Error())
 		return -1, err
 	}
-	fmt.Printf("Socket file descriptor: %d\n", fd)
 	return fd, nil
 }
 
@@ -92,11 +97,10 @@ func GetRegistry(fd int) uint32 {
 	msg = binary.LittleEndian.AppendUint16(msg, uint16(msgAnnouncedSize))
 	waylandCurrentId++
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
-	n, err := syscall.Write(fd, msg)
+	_, err := syscall.Write(fd, msg)
 	if err != nil {
 		fmt.Println("GetRegistry error: " + err.Error())
 	}
-	fmt.Printf("wrote %d bytes to the socket\n", n)
 	return waylandCurrentId
 }
 
@@ -189,7 +193,6 @@ func getMsgHeader(msg []byte) WaylandHeader {
 }
 
 func SendWmBasePong(pingBytes []byte, fd int, state *State) {
-	fmt.Println("SEND WM BASE PONG")
 	ping := binary.LittleEndian.Uint32(pingBytes[:4])
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgWmBase)
@@ -204,7 +207,6 @@ func SendWmBasePong(pingBytes []byte, fd int, state *State) {
 }
 
 func SendSurfaceAckConfigure(configureBytes []byte, fd int, state *State) {
-	fmt.Println("SEND SURFACE ACK")
 	configure := binary.LittleEndian.Uint32(configureBytes[:4])
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgSurface)
@@ -276,6 +278,60 @@ func SurfaceAttach(fd int, state *State) error {
 		return err
 	}
 	return nil
+}
+
+func CreateKeyboard(fd int, state *State) uint32 {
+	msg := make([]byte, 0)
+	msg = binary.LittleEndian.AppendUint32(msg, state.wlSeat)
+	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSeatGetKeyboardOpcode)
+	msgSize := waylandHeaderSize + 4
+	msg = binary.LittleEndian.AppendUint16(msg, uint16(msgSize))
+	waylandCurrentId++
+	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
+	_, err := syscall.Write(fd, msg)
+	if err != nil {
+		fmt.Println("CreateKeyboard error: ", err.Error())
+	}
+	return waylandCurrentId
+}
+
+func DecodeKeyEvent(data []byte) (KeyEvent, error) {
+	if len(data) != 16 {
+		return KeyEvent{}, errors.New(fmt.Sprintf("couldn't decode key event. data=%v", data))
+	}
+	ke := KeyEvent{}
+	ke.scanCode = binary.LittleEndian.Uint32(data[8:12])
+	state := binary.LittleEndian.Uint32(data[12:16])
+	if state == 0 {
+		ke.state = false
+	} else {
+		ke.state = true
+	}
+	return ke, nil
+}
+
+func DecodeKeyboardModifiersEvent(data []byte) (KeyModifiers, error) {
+	km := KeyModifiers{}
+	if len(data) != 20 {
+		return km, errors.New(fmt.Sprintf("couldn't decode key event. data=%v", data))
+	}
+	km.modsDepressed = binary.LittleEndian.Uint32(data[4:8])
+	km.modsLatched = binary.LittleEndian.Uint32(data[8:12])
+	km.modsLocked = binary.LittleEndian.Uint32(data[12:16])
+	km.group = binary.LittleEndian.Uint32(data[16:20])
+	return km, nil
+}
+
+type KeyEvent struct {
+	scanCode uint32
+	state    bool
+}
+
+type KeyModifiers struct {
+	modsDepressed uint32
+	modsLatched   uint32
+	modsLocked    uint32
+	group         uint32
 }
 
 type WaylandInterface struct {

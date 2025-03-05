@@ -6,10 +6,34 @@ import (
 	"math/rand/v2"
 	"sync"
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+func keyboardEventsForward() chan []byte {
+	keyboardEventsChan := make(chan []byte, 0)
+	go func() {
+		for event := range keyboardEventsChan {
+			header := getMsgHeader(event)
+			if header.opcode == waylandWlKeyboardKeyEventOpcode {
+				ke, err := DecodeKeyEvent(event[8:])
+				if err != nil {
+					fmt.Println(err.Error())
+					continue
+				}
+				fmt.Println(ke)
+			} else if header.opcode == waylandWlKeyboardModifiersOpcode {
+				km, err := DecodeKeyboardModifiersEvent(event[8:])
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				fmt.Println(km)
+			}
+		}
+	}()
+	return keyboardEventsChan
+}
 
 func receiveFromWayland(fd int, waylandDataChan chan []byte) {
 	for {
@@ -25,14 +49,15 @@ func receiveFromWayland(fd int, waylandDataChan chan []byte) {
 	}
 }
 
-func handleWaylandMsgs(fd int, state *State, waylandDataChan chan []byte) {
+func handleWaylandMsgs(fd int, state *State, waylandDataChan chan []byte, keyboardEventsChan chan []byte) {
 	for data := range waylandDataChan {
 		for len(data) > 0 {
 			header := getMsgHeader(data)
 			if header.msgSize == 0 {
 				break
 			}
-			fmt.Printf("header=%+v\n", header)
+			// fmt.Printf("header=%+v\n", header)
+			// fmt.Println(data[:header.msgSize])
 			if header.objectId == state.wlRegistry && header.opcode == waylandWlRegistryEventGlobal {
 				// get registry complete, bind to the interface
 				waylandIface := getMsgInterface(data)
@@ -43,6 +68,8 @@ func handleWaylandMsgs(fd int, state *State, waylandDataChan chan []byte) {
 					state.wlShm = RegistryBind(fd, state.wlRegistry, waylandIface.name, waylandIface.ifaceWithPadding, waylandIface.ifaceLen, waylandIface.version)
 				case "xdg_wm_base":
 					state.xdgWmBase = RegistryBind(fd, state.wlRegistry, waylandIface.name, waylandIface.ifaceWithPadding, waylandIface.ifaceLen, waylandIface.version)
+				case "wl_seat":
+					state.wlSeat = RegistryBind(fd, state.wlRegistry, waylandIface.name, waylandIface.ifaceWithPadding, waylandIface.ifaceLen, waylandIface.version)
 				}
 			}
 			if header.objectId == waylandDisplayObjectId && header.opcode == waylandWlDisplayErrorEvent {
@@ -55,15 +82,12 @@ func handleWaylandMsgs(fd int, state *State, waylandDataChan chan []byte) {
 				state.xdgSurface = GetXdgSurface(fd, state)
 				state.xdgToplevel = GetXdgSurfaceTopLevel(fd, state)
 				SurfaceCommit(fd, state)
-				fmt.Println("SURFACE COMMIT")
 			}
 			if header.objectId == state.xdgWmBase && header.opcode == waylandXdgWmBaseEventPing {
 				SendWmBasePong(data[8:12], fd, state) //skip the header and go to the argument which is ping
-				fmt.Println("BASE PONG SENT")
 			}
 			if header.objectId == state.xdgSurface && header.opcode == waylandXdgSurfaceEventConfigure {
 				SendSurfaceAckConfigure(data[8:12], fd, state) //skip the header and go to the argument which is configure
-				fmt.Println("ACK CONF SENT")
 			}
 			if header.objectId == state.wlShm && header.opcode == waylandShmPoolEventFormat {
 				fmt.Printf("Shm Pool format: %d\n", binary.LittleEndian.Uint32(data[8:12]))
@@ -71,11 +95,21 @@ func handleWaylandMsgs(fd int, state *State, waylandDataChan chan []byte) {
 			if header.objectId == state.xdgToplevel && header.opcode == waylandXdgToplevelEventConfigure {
 				fmt.Println("top level configure")
 			}
+			if header.objectId == state.wlKeyboard {
+				keyboardEventsChan <- data[:header.msgSize]
+			}
 			if header.objectId == state.xdgToplevel && header.opcode == waylandXdgToplevelEventClose {
 				fmt.Println("EXIT")
+				return
 			}
-			fmt.Printf("State=%+v\n", state)
+			// fmt.Printf("State=%+v\n", state)
 			data = data[header.msgSize:]
+		}
+
+		if state.wlSeat != 0 && state.wlKeyboard == 0 {
+			// request wl_keyboard
+			state.wlKeyboard = CreateKeyboard(fd, state)
+
 		}
 		if state.stateState == stateSurfaceAckedConfigure {
 			if state.wlShmPool == 0 {
@@ -134,6 +168,7 @@ func createState(currentId uint32) *State {
 
 func main() {
 	waylandDataChan := make(chan []byte)
+	keyboardEventsChan := keyboardEventsForward()
 	fd, err := DisplayConnect()
 	if err != nil {
 		return
@@ -150,12 +185,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		handleWaylandMsgs(fd, state, waylandDataChan)
+		handleWaylandMsgs(fd, state, waylandDataChan, keyboardEventsChan)
 	}()
-	for {
-		if state.stateState == stateSurfaceAttached {
-			render(fd, state)
-			time.Sleep(3 * time.Second)
-		}
-	}
+	wg.Wait()
 }
