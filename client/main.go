@@ -4,13 +4,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
+	"net"
+	"os"
 	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func keyboardEventsForward() chan []byte {
+func keyboardEventsForward(targetConn *net.TCPConn) chan []byte {
 	keyboardEventsChan := make(chan []byte, 0)
 	go func() {
 		for event := range keyboardEventsChan {
@@ -21,7 +23,18 @@ func keyboardEventsForward() chan []byte {
 					fmt.Println(err.Error())
 					continue
 				}
-				fmt.Println(ke)
+				keyMsg := make([]byte, 2)
+				keyMsg[0] = byte(ke.scanCode)
+				if ke.state {
+					keyMsg[1] = byte(1)
+				} else {
+					keyMsg[1] = byte(0)
+				}
+				fmt.Println(keyMsg)
+				_, err = targetConn.Write(keyMsg)
+				if err != nil {
+					fmt.Println(err)
+				}
 			} else if header.opcode == waylandWlKeyboardModifiersOpcode {
 				km, err := DecodeKeyboardModifiersEvent(event[8:])
 				if err != nil {
@@ -167,8 +180,22 @@ func createState(currentId uint32) *State {
 }
 
 func main() {
+	connType := "tcp"
+	host := "192.168.124.3"
+	port := "3001"
+	serv := fmt.Sprintf("%s:%s", host, port)
+	tcpServer, err := net.ResolveTCPAddr(connType, serv)
+	if err != nil {
+		fmt.Println("wrong host or port")
+		os.Exit(1)
+	}
+	conn, err := net.DialTCP(connType, nil, tcpServer)
+	if err != nil {
+		fmt.Println("can't connect to a specified server")
+		os.Exit(1)
+	}
 	waylandDataChan := make(chan []byte)
-	keyboardEventsChan := keyboardEventsForward()
+	keyboardEventsChan := keyboardEventsForward(conn)
 	fd, err := DisplayConnect()
 	if err != nil {
 		return
