@@ -1,0 +1,15 @@
+[Unit]
+Description=virtual keyboard service
+After=network.target
+
+[Service]
+ExecStart=
+Type=simple
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=%n
+
+[Install]
+WantedBy=multi-user.target
