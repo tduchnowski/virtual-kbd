@@ -36,6 +36,7 @@ const colorChannels uint32 = 4
 const waylandWlSeatGetKeyboardOpcode = 1
 const waylandWlKeyboardKeyEventOpcode = 3
 const waylandWlKeyboardModifiersOpcode = 4
+const waylandShortcutsInhibitorCreateOpcode = 1
 
 type StateEnum int
 
@@ -46,24 +47,26 @@ const (
 )
 
 type State struct {
-	wlRegistry   uint32
-	wlShm        uint32
-	wlShmPool    uint32 // addres of a shared resource in memory
-	wlBuffer     uint32
-	xdgWmBase    uint32
-	xdgSurface   uint32
-	wlCompositor uint32
-	wlSurface    uint32
-	xdgToplevel  uint32
-	stride       uint32 // how many bytes in a row
-	w            uint32 // width
-	h            uint32 // height
-	shmPoolSize  uint32 // how many bytes total
-	shmFd        int    // file descriptor of a shared memory resource
-	shmPoolData  *[]byte
-	wlSeat       uint32
-	wlKeyboard   uint32
-	stateState   StateEnum
+	wlRegistry              uint32
+	wlShm                   uint32
+	wlShmPool               uint32 // addres of a shared resource in memory
+	wlBuffer                uint32
+	xdgWmBase               uint32
+	xdgSurface              uint32
+	wlCompositor            uint32
+	wlSurface               uint32
+	xdgToplevel             uint32
+	stride                  uint32 // how many bytes in a row
+	w                       uint32 // width of a surface
+	h                       uint32 // height of a surface
+	shmPoolSize             uint32 // how many bytes total in a surface
+	shmFd                   int    // file descriptor of a shared memory resource
+	shmPoolData             *[]byte
+	wlSeat                  uint32
+	wlKeyboard              uint32
+	zwpShortcutsInhibitMngr uint32
+	zwpShortcutsInhibitor   uint32
+	stateState              StateEnum
 }
 
 type WaylandHeader struct {
@@ -75,16 +78,14 @@ type WaylandHeader struct {
 func DisplayConnect() (int, error) {
 	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		fmt.Println("Connection error: ", err)
-		return -1, nil
+		return -1, errors.New("socket error: " + err.Error())
 	}
 	xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	waylandDisplay := os.Getenv("WAYLAND_DISPLAY")
 	path := fmt.Sprintf("%s/%s", xdgRuntimeDir, waylandDisplay)
 	addr := syscall.SockaddrUnix{Name: path}
 	if err := syscall.Connect(fd, &addr); err != nil {
-		fmt.Println("Connection error: ", err.Error())
-		return -1, err
+		return -1, errors.New("connection error: " + err.Error())
 	}
 	return fd, nil
 }
@@ -295,6 +296,36 @@ func CreateKeyboard(fd int, state *State) uint32 {
 	return waylandCurrentId
 }
 
+func InhibitGlobalShortcuts(fd int, state *State) uint32 {
+	// request from zwpShortcutsInhibitMngr an inhibitor object
+	msg := make([]byte, 0)
+	msg = binary.LittleEndian.AppendUint32(msg, state.zwpShortcutsInhibitMngr)
+	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSeatGetKeyboardOpcode)
+	msgSize := waylandHeaderSize + 12
+	msg = binary.LittleEndian.AppendUint16(msg, uint16(msgSize))
+	waylandCurrentId++
+	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
+	msg = binary.LittleEndian.AppendUint32(msg, state.wlSurface)
+	msg = binary.LittleEndian.AppendUint32(msg, state.wlSeat)
+	_, err := syscall.Write(fd, msg)
+	if err != nil {
+		fmt.Println("CreateKeyboard error: ", err.Error())
+	}
+	return waylandCurrentId
+}
+
+type KeyEvent struct {
+	scanCode uint32
+	state    bool
+}
+
+type KeyModifiers struct {
+	modsDepressed uint32
+	modsLatched   uint32
+	modsLocked    uint32
+	group         uint32
+}
+
 func DecodeKeyEvent(data []byte) (KeyEvent, error) {
 	if len(data) != 16 {
 		return KeyEvent{}, errors.New(fmt.Sprintf("couldn't decode key event. data=%v", data))
@@ -320,18 +351,6 @@ func DecodeKeyboardModifiersEvent(data []byte) (KeyModifiers, error) {
 	km.modsLocked = binary.LittleEndian.Uint32(data[12:16])
 	km.group = binary.LittleEndian.Uint32(data[16:20])
 	return km, nil
-}
-
-type KeyEvent struct {
-	scanCode uint32
-	state    bool
-}
-
-type KeyModifiers struct {
-	modsDepressed uint32
-	modsLatched   uint32
-	modsLocked    uint32
-	group         uint32
 }
 
 type WaylandInterface struct {
