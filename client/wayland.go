@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"syscall"
 )
@@ -76,6 +77,7 @@ type WaylandHeader struct {
 }
 
 func DisplayConnect() (int, error) {
+	slog.Debug("connect to a display server")
 	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		return -1, errors.New("socket error: " + err.Error())
@@ -91,6 +93,7 @@ func DisplayConnect() (int, error) {
 }
 
 func GetRegistry(fd int) uint32 {
+	slog.Debug("request a registry")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, waylandDisplayObjectId)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlDisplayGetRegistryOpcode)
@@ -105,30 +108,37 @@ func GetRegistry(fd int) uint32 {
 	return waylandCurrentId
 }
 
-func RegistryBind(fd int, registry uint32, name uint32, ifacePadded []byte, ifaceLen uint32, version uint32) uint32 {
-	// registry | opcode | msg length | name | interfaceLen | interface with padding | version | wayland current id
-	// 4        | 2      | 2          | 4    | 4            | len(interface padded)  | 4       | 4
-	// 20 + len(interface padded) bytes
-	fmt.Printf("registry bind: ifacePadded=%s, ifaceLen=%d, ifaceLenPadded=%d\n", string(ifacePadded), ifaceLen, len(ifacePadded))
+type WaylandInterface struct {
+	name        uint32
+	len         uint32
+	lenPadded   uint32
+	iface       []byte
+	withPadding []byte
+	version     uint32
+}
+
+func RegistryBind(fd int, registry uint32, iface WaylandInterface) (uint32, error) {
+	slog.Debug(fmt.Sprintf("bind to an interface %s", iface.iface))
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, registry)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlRegistryBindOpcode)
-	msgSize := waylandHeaderSize + 4 + 4 + uint32(len(ifacePadded)) + 4 + 4 // the 4s come from the sizes of name, ifaceLen, version and waylandCurrentId variables that are all uint32
+	msgSize := waylandHeaderSize + 4 + 4 + uint32(iface.lenPadded) + 4 + 4 // the 4s come from the sizes of name, ifaceLen, version and waylandCurrentId variables that are all uint32
 	msg = binary.LittleEndian.AppendUint16(msg, uint16(msgSize))
-	msg = binary.LittleEndian.AppendUint32(msg, name)
-	msg = binary.LittleEndian.AppendUint32(msg, ifaceLen)
-	msg = append(msg, ifacePadded...)
-	msg = binary.LittleEndian.AppendUint32(msg, version)
+	msg = binary.LittleEndian.AppendUint32(msg, iface.name)
+	msg = binary.LittleEndian.AppendUint32(msg, iface.len)
+	msg = append(msg, iface.withPadding...)
+	msg = binary.LittleEndian.AppendUint32(msg, iface.version)
 	waylandCurrentId++
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("Registry bind error: " + err.Error())
+		return 0, err
 	}
-	return waylandCurrentId
+	return waylandCurrentId, nil
 }
 
 func CreateSurface(fd int, state *State) uint32 {
+	slog.Debug("request new surface")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlCompositor)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlCompositorCreateSurfaceOpcode)
@@ -138,12 +148,13 @@ func CreateSurface(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("CreateSurface error: " + err.Error())
+		slog.Error("request new surface failed: " + err.Error())
 	}
 	return waylandCurrentId
 }
 
 func GetXdgSurface(fd int, state *State) uint32 {
+	slog.Debug("request xdg surface object")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgWmBase)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandXdgWmBaseGetXdgSurfaceOpcode)
@@ -154,12 +165,13 @@ func GetXdgSurface(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlSurface)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("GetXdgSurface error: " + err.Error())
+		slog.Error("request xdg surface failed: " + err.Error())
 	}
 	return waylandCurrentId
 }
 
 func GetXdgSurfaceTopLevel(fd int, state *State) uint32 {
+	slog.Debug("request xdg surface top level object")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgSurface)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandXdgSurfaceGetToplevelOpcode)
@@ -169,12 +181,13 @@ func GetXdgSurfaceTopLevel(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("GetXdgSurfaceTopLevel error: " + err.Error())
+		slog.Error("GetXdgSurfaceTopLevel error: " + err.Error())
 	}
 	return waylandCurrentId
 }
 
 func SurfaceCommit(fd int, state *State) {
+	slog.Debug("commit surface")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlSurface)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSurfaceCommitOpcode)
@@ -182,7 +195,7 @@ func SurfaceCommit(fd int, state *State) {
 	msg = binary.LittleEndian.AppendUint16(msg, uint16(msgSize))
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("SurfaceCommit error: " + err.Error())
+		slog.Error("commit surface failed: " + err.Error())
 	}
 }
 
@@ -193,7 +206,9 @@ func getMsgHeader(msg []byte) WaylandHeader {
 	return WaylandHeader{objectId, opcode, msgSize}
 }
 
-func SendWmBasePong(pingBytes []byte, fd int, state *State) {
+func SendWmBasePong(data []byte, fd int, state *State) {
+	slog.Debug("send pong")
+	pingBytes := data[waylandHeaderSize:]
 	ping := binary.LittleEndian.Uint32(pingBytes[:4])
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgWmBase)
@@ -203,11 +218,12 @@ func SendWmBasePong(pingBytes []byte, fd int, state *State) {
 	msg = binary.LittleEndian.AppendUint32(msg, ping)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("SendWmBasePong error: " + err.Error())
+		slog.Error("send pong failed: " + err.Error())
 	}
 }
 
 func SendSurfaceAckConfigure(configureBytes []byte, fd int, state *State) {
+	slog.Debug("send surface ACK configure")
 	configure := binary.LittleEndian.Uint32(configureBytes[:4])
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.xdgSurface)
@@ -217,13 +233,14 @@ func SendSurfaceAckConfigure(configureBytes []byte, fd int, state *State) {
 	msg = binary.LittleEndian.AppendUint32(msg, configure)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("SendSurfaceAckConfigur error: " + err.Error())
+		slog.Error("send surface ACK configure failed: " + err.Error())
 		return
 	}
 	state.stateState = stateSurfaceAckedConfigure
 }
 
 func CreateShmPool(fd int, state *State) (uint32, error) {
+	slog.Debug("create shm pool")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlShm)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlShmCreatePoolOpcode)
@@ -232,18 +249,16 @@ func CreateShmPool(fd int, state *State) (uint32, error) {
 	waylandCurrentId++
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
 	msg = binary.LittleEndian.AppendUint32(msg, state.shmPoolSize)
-	// _, err := syscall.Write(fd, msg)
-	fmt.Println(state.shmFd)
-	fmt.Println(os.Getpid())
 	oob := syscall.UnixRights(state.shmFd)
 	err := syscall.Sendmsg(fd, msg, oob, nil, 0)
 	if err != nil {
-		fmt.Println("SendSurfaceAckConfigur error: " + err.Error())
+		slog.Error("create shm pool: " + err.Error())
 	}
 	return waylandCurrentId, nil
 }
 
 func CreateShmPoolBuffer(fd int, state *State) uint32 {
+	slog.Debug("create shm pool buffer")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlShmPool)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlShmPoolCreateBufferOpcode)
@@ -259,12 +274,13 @@ func CreateShmPoolBuffer(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, waylandFormatXrgb8888)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("SendSurfaceAckConfigure error: " + err.Error())
+		slog.Error("create shm pool buffer failed: " + err.Error())
 	}
 	return waylandCurrentId
 }
 
 func SurfaceAttach(fd int, state *State) error {
+	slog.Debug("attach surface")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlSurface)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSurfaceAttachOpcode)
@@ -282,6 +298,7 @@ func SurfaceAttach(fd int, state *State) error {
 }
 
 func CreateKeyboard(fd int, state *State) uint32 {
+	slog.Debug("create keyboard")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlSeat)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSeatGetKeyboardOpcode)
@@ -291,13 +308,14 @@ func CreateKeyboard(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, waylandCurrentId)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("CreateKeyboard error: ", err.Error())
+		slog.Error("create keyboard failed: " + err.Error())
 	}
 	return waylandCurrentId
 }
 
+// request from zwpShortcutsInhibitMngr an inhibitor object
 func InhibitGlobalShortcuts(fd int, state *State) uint32 {
-	// request from zwpShortcutsInhibitMngr an inhibitor object
+	slog.Debug("requesting global shortcuts inhibitor object")
 	msg := make([]byte, 0)
 	msg = binary.LittleEndian.AppendUint32(msg, state.zwpShortcutsInhibitMngr)
 	msg = binary.LittleEndian.AppendUint16(msg, waylandWlSeatGetKeyboardOpcode)
@@ -309,7 +327,7 @@ func InhibitGlobalShortcuts(fd int, state *State) uint32 {
 	msg = binary.LittleEndian.AppendUint32(msg, state.wlSeat)
 	_, err := syscall.Write(fd, msg)
 	if err != nil {
-		fmt.Println("CreateKeyboard error: ", err.Error())
+		slog.Error("requesting a global shortcuts inhibitor failed: " + err.Error())
 	}
 	return waylandCurrentId
 }
@@ -353,26 +371,14 @@ func DecodeKeyboardModifiersEvent(data []byte) (KeyModifiers, error) {
 	return km, nil
 }
 
-type WaylandInterface struct {
-	name             uint32
-	ifaceLen         uint32
-	ifaceLenPadded   uint32
-	iface            []byte
-	ifaceWithPadding []byte
-	version          uint32
-}
-
 func getMsgInterface(msg []byte) WaylandInterface {
 	name := binary.LittleEndian.Uint32(msg[8:12])
 	interfaceLen := binary.LittleEndian.Uint32(msg[12:16])
 	interfaceLenPadded := roundUpToMultpl4(interfaceLen)
-	// fmt.Printf("name=%d, interfaceLen=%d, interfaceLenPadded=%d\n", name, interfaceLen, interfaceLenPadded)
 	iface := msg[16 : 16+interfaceLen]
 	ifaceWithPadding := msg[16 : 16+interfaceLenPadded]
-	// fmt.Printf("interface=%s\n", iface)
 	version := binary.LittleEndian.Uint32(msg[16+interfaceLenPadded : 20+interfaceLenPadded])
-	// fmt.Printf("version=%d\n", version) // length of interface should be 1 less than what Wayland gives, because Wayland includes the NULL in the end
-	return WaylandInterface{name: name, ifaceLen: interfaceLen, ifaceLenPadded: interfaceLenPadded, iface: iface, ifaceWithPadding: ifaceWithPadding, version: version}
+	return WaylandInterface{name: name, len: interfaceLen, lenPadded: interfaceLenPadded, iface: iface, withPadding: ifaceWithPadding, version: version}
 }
 
 func iterfaceNameBytes(iface string, ifaceLen uint32) []byte {
