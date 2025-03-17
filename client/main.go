@@ -12,6 +12,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// a function that gets keyboard events from keyboardEventsChan and forwards these
+// events to a remote machine.
+//
+// returns a channel the events are supposed to be sent to
 func keyboardEventsForward(targetConn *net.TCPConn, done chan bool) chan []byte {
 	keyboardEventsChan := make(chan []byte, 0)
 	go func() {
@@ -45,6 +49,7 @@ func keyboardEventsForward(targetConn *net.TCPConn, done chan bool) chan []byte 
 	return keyboardEventsChan
 }
 
+// Reads all the data coming from a displays server socket
 func receiveFromWayland(fd int, state *State, keyboardEvents chan []byte, done chan bool) {
 	for {
 		waylandData := make([]byte, 4096)
@@ -62,6 +67,11 @@ func receiveFromWayland(fd int, state *State, keyboardEvents chan []byte, done c
 	}
 }
 
+// Processes the data from a display server.
+//
+// Responsible for: binding to interfaces, sending a value to a done channel signaling that the application
+// should stop, setting up surfaces, answering to pong messages from a display server, sending keyboard events
+// through keyboardEvents channel.
 func handleWaylandData(fd int, state *State, keyboardEvents chan []byte, data []byte, done chan bool) {
 	for len(data) > 0 {
 		header := getMsgHeader(data)

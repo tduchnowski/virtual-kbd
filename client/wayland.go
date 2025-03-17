@@ -9,6 +9,14 @@ import (
 	"syscall"
 )
 
+// This variable keeps track on the last objectId
+// thats been assigned. Every time a request for a creation
+// of a new object is sent to a display server, this variable
+// is incremented by 1. Object ids are used to uniquelly refer
+// to an object. For example, to make a server send keyboard
+// events - first,  wl_seat object is needed. After that its
+// possible to use wl_seat id in a request for  wl_keyboard
+// and the server starts sending keyboard events.
 var waylandCurrentId uint32 = 1
 
 const waylandDisplayObjectId uint32 = 1
@@ -47,10 +55,15 @@ const (
 	stateSurfaceAttached
 )
 
+// A State struct represents all the interfaces, objects
+// and other properties of a window. It keeps track of all
+// object ids needed + additional information like the size
+// of a window and a file descriptor of memory shared with
+// the server that represents pixels.
 type State struct {
 	wlRegistry              uint32
 	wlShm                   uint32
-	wlShmPool               uint32 // addres of a shared resource in memory
+	wlShmPool               uint32
 	wlBuffer                uint32
 	xdgWmBase               uint32
 	xdgSurface              uint32
